@@ -2,7 +2,6 @@ import base64
 import gzip
 import os
 import re
-import socket
 import subprocess
 
 SERVER_LIST_FILE = "server_list.txt"
@@ -10,7 +9,7 @@ OVPN_DIR = "ovpn_configs"
 
 
 def load_existing_servers(filepath):
-    """Load existing (IP:Port:Protocol) entries from server_list.txt to prevent duplicates."""
+    """server_list.txt se purane servers load karega taaki duplicate add na ho."""
     existing = set()
     if os.path.exists(filepath):
         with open(filepath, "r", encoding="utf-8") as f:
@@ -18,7 +17,6 @@ def load_existing_servers(filepath):
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                # Format: 103.172.220.133:995 | Protocol: TCP | ...
                 match = re.match(
                     r"^([\d\.]+):(\d+)\s*\|\s*Protocol:\s*(TCP|UDP)",
                     line,
@@ -34,42 +32,8 @@ def load_existing_servers(filepath):
     return existing
 
 
-def check_tcp_working(ip, port, timeout=3):
-    """Test if TCP port is open and reachable."""
-    try:
-        with socket.create_connection((ip, int(port)), timeout=timeout):
-            return True
-    except Exception:
-        return False
-
-
-def check_udp_working(ip, port, tcp_alive=False, timeout=3):
-    """Test if OpenVPN UDP port is reachable.
-
-    Sends an OpenVPN P_CONTROL_HARD_RESET_CLIENT_V2 handshake packet.
-    """
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(timeout)
-        sock.connect((ip, int(port)))
-        # OpenVPN Hard Reset Client V2 packet (14 bytes)
-        packet = b"\x38" + os.urandom(8) + b"\x00\x00\x00\x00\x00"
-        sock.send(packet)
-        data = sock.recv(1024)
-        sock.close()
-        return len(data) > 0
-    except ConnectionRefusedError:
-        # ICMP Port Unreachable received -> Port is closed
-        return False
-    except socket.timeout:
-        # If UDP probe times out due to firewall/NAT, count as working if TCP on same host is alive
-        return tcp_alive
-    except Exception:
-        return False
-
-
 def build_ovpn_config(base_ovpn_text, ip, port, proto):
-    """Update the .ovpn config text with the specific protocol (tcp/udp) and port."""
+    """OpenVPN config ke andar proto (tcp/udp) aur port set karega."""
     proto_lower = proto.lower()
     updated = re.sub(
         r"^proto\s+\S+",
@@ -88,6 +52,11 @@ def build_ovpn_config(base_ovpn_text, ip, port, proto):
 
 def fetch_and_filter_india(url):
     print(f"Fetching data via cURL from: {url}...")
+
+    # File aur folder pehle hi bana do taaki GitHub Action kabhi fail na ho
+    os.makedirs(OVPN_DIR, exist_ok=True)
+    if not os.path.exists(SERVER_LIST_FILE):
+        open(SERVER_LIST_FILE, "w", encoding="utf-8").close()
 
     command = [
         "curl",
@@ -115,7 +84,7 @@ def fetch_and_filter_india(url):
             .replace("\r\n", "\n")
         )
 
-        # Find all India CSV lines
+        # CSV me se India wali lines filter karo
         india_lines = [
             line.strip()
             for line in raw_text.split("\n")
@@ -123,13 +92,11 @@ def fetch_and_filter_india(url):
         ]
 
         if not india_lines:
-            print("\n⚠️ Found 0 India servers in the current API response.")
+            print("\n⚠️ Found 0 India servers in the current CSV.")
             return
 
-        os.makedirs(OVPN_DIR, exist_ok=True)
         existing_servers = load_existing_servers(SERVER_LIST_FILE)
-
-        discovered_endpoints = []
+        discovered_servers = []
 
         for line in india_lines:
             parts = line.split(",")
@@ -141,7 +108,7 @@ def fetch_and_filter_india(url):
             ping = parts[3]
             country = parts[5]
 
-            # Find the Base64 column (index 14, or the longest string > 200 chars)
+            # Base64 column dhoondo (index 14)
             b64_idx = 14
             for idx, part in enumerate(parts):
                 if len(part) > 200:
@@ -149,9 +116,11 @@ def fetch_and_filter_india(url):
                     break
 
             b64_ovpn = parts[b64_idx]
-            extra_cols = parts[b64_idx + 1 :]  # e.g. ['995', '1195', '0', '1', '995', '995']
+            extra_cols = parts[
+                b64_idx + 1 :
+            ]  # Example: ['995', '1195', '0', '1', '995', '995']
 
-            # Decode the Base64 .ovpn config
+            # Base64 .ovpn config decode karo
             ovpn_text = ""
             try:
                 missing_padding = len(b64_ovpn) % 4
@@ -163,7 +132,7 @@ def fetch_and_filter_india(url):
             except Exception:
                 pass
 
-            # Extract default port/proto from .ovpn config as fallback
+            # Agar extra columns na ho toh .ovpn ke andar se port/proto nikalo
             ovpn_proto_match = re.search(
                 r"^proto\s+(tcp|udp)", ovpn_text, re.MULTILINE | re.IGNORECASE
             )
@@ -175,7 +144,7 @@ def fetch_and_filter_india(url):
             )
             ovpn_port = ovpn_remote_match.group(1) if ovpn_remote_match else None
 
-            # Extract TCP and UDP ports from the extra columns after Base64
+            # CSV ke extra columns se TCP aur UDP port nikalo
             tcp_port = (
                 extra_cols[0]
                 if len(extra_cols) > 0
@@ -196,68 +165,56 @@ def fetch_and_filter_india(url):
             if not udp_port and ovpn_proto == "UDP":
                 udp_port = ovpn_port
 
-            # 1. Check TCP Server
-            tcp_alive = False
+            # 1. Agar TCP port hai toh TCP server list me dalo
             if tcp_port:
-                tcp_alive = check_tcp_working(ip, tcp_port)
-                if tcp_alive:
-                    discovered_endpoints.append({
-                        "hostname": hostname,
-                        "country": country,
-                        "ip": ip,
-                        "port": tcp_port,
-                        "proto": "TCP",
-                        "ping": ping,
-                        "ovpn": (
-                            build_ovpn_config(ovpn_text, ip, tcp_port, "TCP")
-                            if ovpn_text
-                            else ""
-                        ),
-                    })
+                discovered_servers.append({
+                    "hostname": hostname,
+                    "country": country,
+                    "ip": ip,
+                    "port": tcp_port,
+                    "proto": "TCP",
+                    "ping": ping,
+                    "ovpn": (
+                        build_ovpn_config(ovpn_text, ip, tcp_port, "TCP")
+                        if ovpn_text
+                        else ""
+                    ),
+                })
 
-            # 2. Check UDP Server (Counts as 2nd server if working on UDP too)
+            # 2. Agar UDP port hai toh UDP server list me dalo (2nd server count hoga)
             if udp_port:
-                udp_alive = check_udp_working(
-                    ip, udp_port, tcp_alive=tcp_alive
-                )
-                if udp_alive:
-                    discovered_endpoints.append({
-                        "hostname": hostname,
-                        "country": country,
-                        "ip": ip,
-                        "port": udp_port,
-                        "proto": "UDP",
-                        "ping": ping,
-                        "ovpn": (
-                            build_ovpn_config(ovpn_text, ip, udp_port, "UDP")
-                            if ovpn_text
-                            else ""
-                        ),
-                    })
+                discovered_servers.append({
+                    "hostname": hostname,
+                    "country": country,
+                    "ip": ip,
+                    "port": udp_port,
+                    "proto": "UDP",
+                    "ping": ping,
+                    "ovpn": (
+                        build_ovpn_config(ovpn_text, ip, udp_port, "UDP")
+                        if ovpn_text
+                        else ""
+                    ),
+                })
 
-        # Output and save non-duplicate servers
-        if not discovered_endpoints:
-            print("\n⚠️ Found India server(s) in list, but none are currently reachable.")
-            return
-
-        print(f"\n✅ Found {len(discovered_endpoints)} working India server(s)!\n")
+        print(f"\n✅ Found {len(discovered_servers)} India server(s) in CSV!\n")
 
         added_count = 0
         skipped_count = 0
 
         with open(SERVER_LIST_FILE, "a", encoding="utf-8") as list_file:
-            for i, srv in enumerate(discovered_endpoints, 1):
+            for i, srv in enumerate(discovered_servers, 1):
                 key = f"{srv['ip']}:{srv['port']}:{srv['proto']}"
                 ovpn_filename = os.path.join(
                     OVPN_DIR,
                     f"india_{srv['ip']}_{srv['proto'].lower()}_{srv['port']}.ovpn",
                 )
 
+                # Duplicate check
                 if key in existing_servers:
                     status_msg = f"⏭️ Duplicate skipped (Already in {SERVER_LIST_FILE})"
                     skipped_count += 1
                 else:
-                    # Add to server_list.txt
                     entry_line = (
                         f"{srv['ip']}:{srv['port']} | "
                         f"Protocol: {srv['proto']} | "
@@ -270,10 +227,12 @@ def fetch_and_filter_india(url):
                     status_msg = f"➕ Added to {SERVER_LIST_FILE}"
                     added_count += 1
 
-                # Save the specific .ovpn file (TCP or UDP)
-                if srv["ovpn"]:
-                    with open(ovpn_filename, "w", encoding="utf-8") as ovpn_file:
-                        ovpn_file.write(srv["ovpn"])
+                    # Naye server ki .ovpn file bhi save kar do
+                    if srv["ovpn"]:
+                        with open(
+                            ovpn_filename, "w", encoding="utf-8"
+                        ) as ovpn_file:
+                            ovpn_file.write(srv["ovpn"])
 
                 print("=" * 50)
                 print(f"Server #{i} : {srv['hostname']}")
@@ -283,11 +242,10 @@ def fetch_and_filter_india(url):
                 print(f"Protocol  : {srv['proto']}")
                 print(f"Ping      : {srv['ping']} ms")
                 print(f"Status    : {status_msg}")
-                print(f"Config    : {ovpn_filename}")
 
         print("=" * 50)
         print(
-            f"\n📄 Summary: {len(discovered_endpoints)} found | "
+            f"\n📄 Summary: {len(discovered_servers)} found | "
             f"{added_count} new added | "
             f"{skipped_count} duplicates skipped | "
             f"{len(existing_servers)} total in '{SERVER_LIST_FILE}'"
