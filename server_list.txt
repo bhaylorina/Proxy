@@ -7,3 +7,4 @@
 103.163.95.84:1195 | Protocol: UDP | Host: vpn958898290 | Country: India | Ping: 5ms
 49.206.11.21:14102 | Protocol: UDP | Host: vpn126334201 | Country: India | Ping: 2ms
 49.204.237.245:17980 | Protocol: UDP | Host: vpn270535328 | Country: India | Ping: 19ms
+203.194.96.96:8808 | Protocol: UDP | Host: vpn792400377 | Country: India | Ping: 2ms
