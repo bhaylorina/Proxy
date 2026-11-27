@@ -6,6 +6,7 @@ import subprocess
 
 SERVER_LIST_FILE = "server_list.txt"
 OVPN_DIR = "ovpn_configs"
+SESSION_ID = "Y10i9B1FgDQ4uXRy6PT1e2XGoLr1aJma"
 
 
 def load_existing_servers(filepath):
@@ -62,11 +63,15 @@ def fetch_and_filter_india(url):
         "curl",
         "--http2",
         "-sL",
+        "-X",
+        "GET",
         url,
         "-H",
         "User-Agent: okhttp/4.12.0",
         "-H",
         "Accept-Encoding: gzip",
+        "-H",
+        f"vpngate-sessionid: {SESSION_ID}",
     ]
 
     try:
