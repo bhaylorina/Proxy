@@ -12,3 +12,4 @@
 49.205.107.58:39988 | Protocol: UDP | Host: vpn185703715 | Country: India | Ping: 10ms
 36.255.88.231:39245 | Protocol: UDP | Host: vpn708547308 | Country: India | Ping: 1ms
 103.163.95.84:1609 | Protocol: UDP | Host: vpn958898290 | Country: India | Ping: 49ms
+49.206.11.21:15164 | Protocol: UDP | Host: vpn126334201 | Country: India | Ping: 2ms
